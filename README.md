@@ -4,6 +4,12 @@
 > ## Mathematical Details
 > See **[MATH.md](MATH.md)** for the complete mathematical foundations and derivations.
 
+
+## Research Paper
+
+- [Read the research paper (PDF)](paper/HPT-DTE-CAFP.pdf)
+- [View the LaTeX source](paper/HPT-DTE-CAFP.tex)
+
 ## What Is This?
 
 A hybrid ML model combining **Harmonic Phase Transformers** (time + frequency domain attention) with **Decision Tree ensembles** for cross-asset financial prediction. Trained on equities, tested zero-shot on crypto, commodities, and unseen stocks.

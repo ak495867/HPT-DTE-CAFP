@@ -1,0 +1,277 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=0.82in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{listings}
+\usepackage{caption}
+\setlength{\emergencystretch}{2em}
+
+\definecolor{codegray}{gray}{0.95}
+\lstset{basicstyle=\ttfamily\scriptsize,backgroundcolor=\color{codegray},frame=single,breaklines=true,columns=fullflexible}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\ind}{\mathbf{1}}
+
+\title{HPT--DTE: A Code-Grounded Dual-Domain Architecture for Cross-Asset Financial Direction Prediction}
+\author{Akhilesh Varma\\\small \href{mailto:akhverm@gmail.com}{akhverm@gmail.com}\\[-2pt]\small \url{https://github.com/ak495867/HPT-DTE-CAFP}}
+\date{}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+Financial direction prediction is difficult because return distributions are non-stationary, cross-asset relationships drift across regimes, and modern classifiers can be substantially overconfident. This paper documents HPT--DTE, a hybrid architecture that combines a time-domain neural sequence encoder, an FFT-based frequency-domain branch, decision-tree regime conditioning, a logistic meta-learner, and held-out isotonic calibration. For an asset, a 20-day window of twelve backward-looking technical and macroeconomic features is transformed into two representations. Time tokens receive a learnable phase-shift tensor, while real and imaginary FFT coefficients provide a harmonic representation. Multi-head cross-attention uses the time branch as query and the frequency branch as key/value; a learned sigmoid gate controls the harmonic residual. A shallow regime tree supplies a one-hot leaf condition, and an equity tree contributes an independent probability to a regularized meta-learner. The calibrated probability is converted into a selective decision with an abstention band. The reported experiment trains on nine equities during 2017--2023 and evaluates without fine-tuning on four unseen equities, three cryptocurrencies, and GLD during 2024--2026. The selective accuracy is 60.0\% on TSLA and 51.4--53.6\% on the three cryptocurrencies, with 22--46 predictions among 80 evaluation opportunities per asset. We provide mathematical descriptions, proofs of the calibration and selectivity properties, implementation-grounded interpretation, and a candid audit of limitations, including the distinction between trade-conditioned accuracy and unconditional forecasting accuracy.
+\end{abstract}
+
+\textbf{Keywords:} financial time series; Transformer; Fourier features; cross-asset generalization; probability calibration; selective classification; decision trees.
+
+\section{Introduction}
+A next-day directional label is deceptively simple: given information available at the close of day $t$, predict whether the next close is higher. In liquid markets, the conditional edge is typically small, relationships change with volatility and liquidity regimes, and the target is close to balanced. A model that emits $0.75$ for the probability of an increase but is correct only 55\% of the time is not merely inaccurate; it is miscalibrated. Such overconfidence can increase turnover and make a weak statistical association appear actionable.
+
+HPT--DTE is designed around four responses to these difficulties. First, it represents the same window in both time and frequency domains. Second, it gives the model a learnable phase-shift parameter rather than relying only on fixed positional encodings. Third, it combines a neural probability with tree-based regime and equity signals. Fourth, it separates score formation from probability calibration and permits abstention when the calibrated score is indecisive.
+
+The central empirical question is not whether the model can fit the training equities. It is whether an equity-trained representation transfers to assets not used in fitting, including cryptoassets and a gold ETF. The repository reports a zero-shot protocol, but an academically careful reading must distinguish what the code guarantees from what it merely prints. Accordingly, all numerical findings below are reported as results of the supplied run logs rather than as independently re-estimated estimates. In particular, the code's feature-verification function is diagnostic rather than a formal proof, and the training function concatenates asset matrices before window construction. We therefore describe the intended protocol and explicitly record these implementation qualifications.
+
+\section{Contributions and Scope}
+This paper makes five methodological contributions. It gives a reproducible description of a compact dual-domain architecture; derives the tensor operations used by the implementation; formalizes held-out isotonic calibration as an empirical monotone least-squares problem; proves the effect of confidence thresholding under informative probabilities; and reports cross-asset results together with a limitations audit. The paper is a methodological research report, not an investment recommendation. The supplied repository states that the code is for research and educational purposes and omits transaction costs, slippage, market impact, and live-trading safeguards [1].
+
+\section{Background and Related Work}
+The neural block is related to the Transformer, whose attention mechanism computes content-dependent weighted averages [2]. The frequency branch is motivated by the discrete Fourier transform: periodic or quasi-periodic structure can become localized in frequency even when it is difficult to recognize from raw observations. The use of both real and imaginary coefficients preserves amplitude and phase information. The model is also related to hybrid statistical--machine-learning ensembles, in which a low-capacity tree provides a piecewise-constant partition while a neural network learns smooth representations.
+
+Calibration is distinct from discrimination. A discriminative score can rank positive examples above negative examples while still assigning probabilities that are too extreme. Platt scaling fits a parametric sigmoid, whereas isotonic regression fits a non-decreasing piecewise-constant map and is appropriate when the distortion is not well described by a single logistic curve [3,4]. Selective classification adds a reject option: the system is evaluated conditionally on making a decision, while coverage measures how often it chooses not to abstain.
+
+\section{Problem Formulation and Features}
+We use $a$ for an asset, $t$ for a trading day, $d=12$ for the feature dimension, $w=20$ for the lookback window, and $d_m=32$ for the neural representation dimension. For asset $a$, let $x_{a,t}\in\R^{12}$ contain features computed at the close of day $t$. With window length $w=20$, define
+\begin{equation}
+ X_{a,t}=(x_{a,t-w+1},\ldots,x_{a,t}),\qquad y_{a,t+1}=\ind\{C_{a,t+1}>C_{a,t}\}.
+\end{equation}
+The code constructs one- and three-day percentage returns, 20-day rolling return volatility, a five-day moving-average-to-price ratio, RSI, volume change, and the levels and daily changes of VIX, DXY, and the 10-year Treasury yield. All rolling statistics are backward-looking. Macro series are joined to the asset calendar and forward-filled; rows with undefined rolling quantities are removed.
+
+Table~\ref{tab:features} summarizes the feature semantics. Standardization is performed with a single \texttt{StandardScaler}; the implementation fits it before the chronological split on the concatenated equity matrix. This is a methodological detail: fitting the scaler on the full training-period matrix does not use the future test period, but a stricter nested design would fit it only on the first 80\% split.
+
+\begin{table}[t]
+\centering\scriptsize
+\caption{Model features and their intended information content.}
+\label{tab:features}
+\begin{tabular}{p{0.25\columnwidth}p{0.64\columnwidth}}
+\toprule
+Feature group & Variables \\
+\midrule
+Returns and risk & $r_{1d}$, $r_{3d}$, rolling $\sigma_{20}$ \\
+Trend and oscillator & five-day moving-average/price ratio, 14-day RSI \\
+Trading activity & percentage change in volume \\
+Macro levels & VIX, DXY, TNX 10-year yield \\
+Macro changes & one-day changes in VIX, DXY, and TNX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Model Architecture and Implementation Mapping}
+The following map makes explicit which software component implements each mathematical operation. A batch of $B$ examples is represented as $X_{\mathrm{time}}\in\R^{B\times20\times12}$, $X_{\mathrm{freq}}\in\R^{B\times11\times24}$, and $X_{\mathrm{cond}}\in\R^{B\times20}$ after leaf encoding. The final output is a vector in $[0,1]^B$.
+
+\begin{table}[t]
+\centering\scriptsize
+\caption{Component-level correspondence between code and mathematics.}
+\label{tab:componentmap}
+\begin{tabular}{p{0.23\linewidth}p{0.31\linewidth}p{0.35\linewidth}}
+\toprule
+Code component & Tensor or operation & Mathematical role \\
+\midrule
+\texttt{build\_features} & pandas rolling and pct-change operations & Constructs causal covariates $x_t$ and label $y_{t+1}$ \\
+\texttt{StandardScaler} & $x\mapsto(x-\mu)/\sigma$ & Puts heterogeneous features on comparable scales \\
+\texttt{\_build\_windows} & slices $20$ rows; applies \texttt{rfft} & Forms local sequence and spectral tokens \\
+\texttt{time\_proj} & \texttt{Linear(12,32)} & $H_t=XW_t+b_t$ \\
+\texttt{phase\_shifts} & learnable $1\times20\times32$ tensor & Relative-position/phase-like bias $\Phi$ \\
+\texttt{freq\_proj} & \texttt{Linear(24,32)} & Embeds real/imaginary FFT coefficients \\
+\texttt{cross\_attn} & 4-head attention & $A=\operatorname{softmax}(QK^\top/\sqrt{8})V$ \\
+\texttt{gate} & linear layer plus sigmoid & $\widetilde A=\sigma(AW_g+b_g)\odot A$ \\
+\texttt{norm}, \texttt{ffn} & LayerNorm and $32\to128\to32$ MLP & Stabilized residual nonlinear transformation \\
+\texttt{regime\_tree} & depth 4, leaf size 50 & Discrete regime partition and condition vector \\
+\texttt{equity\_tree} & depth 5, leaf size 40 & Independent non-linear probability $p_{\rm eq}$ \\
+\texttt{meta\_learner} & logistic regression, $C=.1$ & Regularized fusion $\sigma(\beta_0+\beta^\top z)$ \\
+\texttt{IsotonicRegression} & PAV monotone fit & $p_{\rm cal}=g(p_{\rm meta})$ \\
+\texttt{predict} & threshold comparisons & Buy/sell/abstain decision with coverage $\kappa$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The execution order is therefore: (i) create causal features, (ii) standardize them, (iii) create a 20-step tensor and its 11-bin real-FFT tensor, (iv) compute the HPT score, (v) compute the two tree signals, (vi) fuse them with logistic regression, (vii) recalibrate the fused score, and (viii) apply the reject rule. This order is important because calibration is applied to the final fused score rather than to the neural score alone.
+
+\subsection{Feature mathematics}
+For close $C_t$ and volume $V_t$, the code uses $r^{(k)}_t=C_t/C_{t-k}-1$, $\sigma_{20,t}=\operatorname{sd}(r^{(1)}_{t-19:t})$, and $m_{5,t}=\frac{1}{5}\sum_{j=0}^{4}C_{t-j}/C_t$. With $\Delta C_t=C_t-C_{t-1}$, the implemented RSI is
+\begin{equation}
+ \operatorname{RSI}_t=100-\frac{100}{1+\frac{\operatorname{MA}_{14}(\max(\Delta C,0))}{\operatorname{MA}_{14}(\max(-\Delta C,0))+10^{-9}}}.
+\end{equation}
+Volume change is $V_t/V_{t-1}-1$. Macro levels are $\{\mathrm{VIX}_t,\mathrm{DXY}_t,\mathrm{TNX}_t\}$ and macro changes are their one-day percentage changes. Standardization uses training-period estimates $\mu_j$ and $\sigma_j$ for feature $j$, producing $\tilde x_{t,j}=(x_{t,j}-\mu_j)/(\sigma_j+\epsilon)$. The label is not standardized: it remains a Bernoulli variable.
+
+\section{Harmonic Phase Transformer}
+\subsection{Time and frequency projections}
+Let $d=12$ and $d_m=32$. The time branch applies a learned affine projection at every timestep:
+\begin{equation}
+ H_t=XW_t+b_t+\Phi,
+\end{equation}
+where $W_t\in\R^{d\times d_m}$ and $\Phi\in\R^{1\times w\times d_m}$ is initialized from $\mathcal N(0,0.05^2)$. Unlike a fixed sinusoidal encoding, $\Phi$ can learn a phase-like offset for each relative position and channel. It should not be interpreted as a literal physical phase estimate; it is a trainable positional bias.
+
+For each feature dimension, the code computes a real FFT along the window axis. If $\widehat X=\operatorname{rFFT}(X)$, the frequency token is
+\begin{equation}
+ H_f=[\Re(\widehat X)\,\Vert\,\Im(\widehat X)]W_f+b_f,
+\end{equation}
+where concatenation yields $2d=24$ input channels. The real FFT has $\lfloor w/2\rfloor+1=11$ frequency bins, so $H_f\in\R^{11\times32}$ for each example. Because the FFT is applied after standardization, its coefficients describe transformed standardized feature trajectories rather than raw prices.
+
+\subsection{Cross-domain attention}
+With four heads, head dimension is $d_h=d_m/4=8$. For each head $h$, define
+\begin{equation}
+ Q_h=H_tW^Q_h,\quad K_h=H_fW^K_h,\quad V_h=H_fW^V_h.
+\end{equation}
+The attention output is
+\begin{equation}
+ A_h=\operatorname{softmax}\left(\frac{Q_hK_h^\top}{\sqrt{d_h}}\right)V_h.
+\end{equation}
+Concatenated heads are linearly projected by the PyTorch multi-head attention module. The direction of information flow matters: time-domain positions query harmonic tokens, so the model asks which frequency components are relevant to each temporal position rather than simply appending FFT features.
+
+The code then applies a channel-wise gate
+\begin{equation}
+ G=\sigma(AW_g+b_g),\qquad \widetilde A=G\odot A,
+\end{equation}
+and a residual normalization,
+\begin{equation}
+ H=\operatorname{LayerNorm}(H_t+\widetilde A).
+\end{equation}
+The gate can suppress noisy harmonic content and pass frequency information only where it is useful. A feed-forward residual follows:
+\begin{equation}
+ H^+=H+W_2\operatorname{GELU}(W_1H+b_1)+b_2,
+\end{equation}
+with hidden width $4d_m=128$.
+
+\subsection{Regime conditioning and output head}
+A regime tree maps the aligned static feature vector to a leaf index. The fitted leaf indices are one-hot encoded, then padded or truncated to condition dimension $c=20$. The condition is mapped to $d_m$ dimensions and broadcast across the window:
+\begin{equation}
+ H_c=\mathbf{1}_w(\operatorname{Linear}_c(e_\ell)).
+\end{equation}
+The code mean-pools $H^+$ and $H_c$, concatenates the two 32-dimensional vectors, and applies a $64\to32\to1$ MLP with GELU and sigmoid:
+\begin{equation}
+ p_{\mathrm{HPT}}=\sigma\left(W_o\,\operatorname{GELU}(W_h[\bar H^+\Vert\bar H_c]+b_h)+b_o\right).
+\end{equation}
+This design supplies continuous temporal--spectral evidence together with a discrete, auditable regime identity.
+
+\section{Decision-Tree Ensemble and Calibration}
+The regime tree has maximum depth four and minimum leaf size 50. A separate equity tree has maximum depth five and minimum leaf size 40. Both use standardized static feature vectors and binary labels. The equity tree produces $p_{\mathrm{eq}}$, while the regime tree produces a numeric leaf index $\ell$. The meta-feature vector is
+\begin{equation}
+ z=[p_{\mathrm{HPT}},p_{\mathrm{eq}},\ell]^\top.
+\end{equation}
+A regularized logistic regression with $C=0.1$ produces
+\begin{equation}
+ p_{\mathrm{meta}}=\sigma(\beta_0+\beta^\top z).
+\end{equation}
+The low $C$ imposes relatively strong L2 regularization and limits the ability of any one component to dominate. The use of the raw integer leaf index is convenient but imposes an artificial ordering on leaves; a one-hot leaf representation in the meta-learner would be a worthwhile robustness experiment.
+
+\subsection{Held-out isotonic calibration}
+The chronology is split into 80\% model-fitting rows and 20\% validation rows. The HPT and trees are trained on the first block. The meta-learner and calibrator are fit on the validation block. Let $(s_i,y_i)$ be validation pairs where $s_i=p_{\mathrm{meta},i}$. Isotonic calibration solves
+\begin{equation}
+ g^*=\arg\min_{g\ \mathrm{nondecreasing}}\sum_{i=1}^n(g(s_i)-y_i)^2,
+\end{equation}
+and returns $p_{\mathrm{cal}}=g^*(p_{\mathrm{meta}})$. The implementation uses the pool-adjacent-violators algorithm through scikit-learn, clips out-of-range inputs, and constrains outputs to $[0,1]$.
+
+\begin{proposition}[Empirical optimality of isotonic calibration]
+Among all non-decreasing recalibration functions evaluated on the observed validation scores, the isotonic solution minimizes empirical squared error.
+\end{proposition}
+\begin{proof}
+Sort the distinct scores as $s_{(1)}\le\cdots\le s_{(m)}$. The feasible fitted-value vectors satisfy $u_1\le\cdots\le u_m$ and $0\le u_j\le1$. The objective is a convex quadratic, so its constrained minimizer is characterized by the KKT conditions. Whenever adjacent fitted block means violate monotonicity, the KKT constraints require pooling them; the minimizing value of a pooled block is its label mean. Repeating this operation yields the pool-adjacent-violators solution. Since the objective depends on $g$ only through values at observed scores, no other monotone function can attain lower validation squared error.
+\end{proof}
+
+\begin{remark}[Calibration and ranking]
+A strictly increasing recalibration preserves every pairwise ranking and therefore preserves ROC--AUC. A merely non-decreasing isotonic map can create ties by pooling score intervals; it cannot reverse strict order, but it can slightly reduce AUC through additional ties. Thus calibration should not be credited with creating a new ranking edge. Any increase in thresholded accuracy arises from changing the decision boundary and abstention pattern, not from monotone improvement in the underlying ordering.
+\end{remark}
+
+\section{Selective Decision Rule}
+For threshold $\tau=0.6$, the deployed action is
+\begin{equation}
+ \widehat y=\begin{cases}1,&p_{\mathrm{cal}}\ge\tau,\\0,&p_{\mathrm{cal}}\le1-\tau,\\\bot,&\text{otherwise.}\end{cases}
+\end{equation}
+Define coverage $\kappa=\Pr(\widehat y\ne\bot)$ and selective accuracy
+\begin{equation}
+ \operatorname{Acc}_{\mathrm{sel}}=\Pr(\widehat y=Y\mid\widehat y\ne\bot).
+\end{equation}
+
+\begin{theorem}[Accuracy--selectivity trade-off]
+Suppose $p(X)=\Pr(Y=1\mid X)$ is calibrated and actions are taken only when $p(X)\ge\tau$ or $p(X)\le1-\tau$, with $\tau>1/2$. Then the conditional probability of a correct action is at least $\tau$ on every selected observation, and hence $\operatorname{Acc}_{\mathrm{sel}}\ge\tau$ in the population.
+\end{theorem}
+\begin{proof}
+If $p(X)\ge\tau$, the action is one and its conditional correctness probability is $\Pr(Y=1\mid X)=p(X)\ge\tau$. If $p(X)\le1-\tau$, the action is zero and its correctness probability is $1-p(X)\ge\tau$. Taking the conditional expectation over the selected set preserves the lower bound. In finite samples, estimated calibration and sampling variation mean the bound need not hold exactly.
+\end{proof}
+
+\section{Optimization, Training, and Serialization}
+The neural parameters $\theta$ are optimized with binary cross-entropy over aligned training windows:
+\begin{equation}
+ \mathcal L_{\mathrm{BCE}}(\theta)=-\frac{1}{N}\sum_{i=1}^{N}\left[y_i\log p_i+(1-y_i)\log(1-p_i)\right].
+\end{equation}
+The code uses AdamW, whose decoupled weight-decay update can be written schematically as
+\begin{equation}
+ \theta_{k+1}=\theta_k-\eta\frac{\widehat m_k}{\sqrt{\widehat v_k}+\epsilon}-\eta\lambda\theta_k,
+\end{equation}
+with $\eta=10^{-3}$ and $\lambda=10^{-4}$. The data loader uses batch size 256 and preserves order by setting \texttt{shuffle=False}; this affects reproducibility and avoids random batch ordering, although it is not itself a leakage guarantee. Thirty epochs are run, and the state dictionary is serialized together with the two trees, encoder, scaler, logistic model, and calibrator. Consequently, inference reconstructs the entire preprocessing-to-decision pipeline from one bundle rather than only loading neural weights.
+
+\subsection{Aligned tensor construction}
+For a standardized matrix $S\in\R^{n\times12}$, the loop in \texttt{\_build\_windows} creates $n-w$ examples. The $i$th time tensor is $S_{i-w:i}$ and the target is $y_i$, so $X_{\mathrm{time}}$ and $X_{\mathrm{freq}}$ have identical first dimensions. With $w=20$, a training block of 12,528 rows yields 12,508 windows. The validation block of 3,132 rows yields 3,112 windows. The static vector supplied to the trees is aligned by dropping its first 20 rows, ensuring that the tree features, HPT output, and label refer to the same forecast origin.
+
+\section{Experimental Protocol}
+The code downloads daily data with \texttt{yfinance}, sets NumPy and PyTorch seeds to 42, and trains with AdamW at learning rate $10^{-3}$, weight decay $10^{-4}$, batch size 256, binary cross-entropy, and 30 epochs. The nine training equities are SPY, QQQ, NVDA, AAPL, MSFT, GOOGL, META, AMD, and INTC. The reported training set contains 15,660 rows, split into 12,528 and 3,132 rows. The test universe is TSLA, AMZN, BA, JPM, BTC-USD, ETH-USD, SOL-USD, and GLD; the reported evaluation uses the last 100 days per asset, producing 80 opportunities after the 20-day window.
+
+\begin{table}[t]
+\centering\scriptsize
+\caption{Reported zero-shot results. Accuracy is calculated on selected predictions according to the supplied logs.}
+\label{tab:results}
+\begin{tabular}{lccccl}
+\toprule
+Asset & Class & Acc. & Selected & Mean $p$ & Reading \\
+\midrule
+TSLA & Equity & 60.0\% & 30/80 & .561 & strongest equity \\
+AMZN & Equity & 46.9\% & 32/80 & .590 & below chance \\
+BA & Equity & 37.9\% & 29/80 & .587 & idiosyncratic failure \\
+JPM & Equity & 45.5\% & 22/80 & .559 & below chance \\
+BTC & Crypto & 52.5\% & 40/80 & .610 & weak positive \\
+ETH & Crypto & 53.6\% & 28/80 & .557 & weak positive \\
+SOL & Crypto & 51.4\% & 37/80 & .604 & near chance \\
+GLD & ETF & 52.2\% & 46/80 & .645 & near chance \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The loss decreases from 0.6605 at epoch five to 0.4724 at epoch 30. On the validation block, the mean meta probability is reported as 0.512 with standard deviation 0.125 before isotonic transformation and 0.512 with standard deviation 0.156 afterward. The comparison in the supplied brief reports an earlier mixed-training, uncalibrated TSLA accuracy of 51.25\% with 66--75 selected calls, versus 60.0\% and 30 selected calls in the calibrated equity-only run. This is an informative engineering comparison, not a controlled ablation, because the training universe and calibration procedure change simultaneously.
+
+\section{Interpretation and Audit}
+The TSLA result is consistent with the possibility that momentum, volatility clustering, and macro sensitivity transfer across equities. The crypto results are weaker but above 50\% in the reported selective sample, suggesting that some statistical regularities may be shared across asset classes. These observations are hypotheses rather than evidence of a persistent trading edge: no confidence intervals, multiple-testing correction, turnover-adjusted returns, or benchmark strategy are reported.
+
+The abstention mechanism is an important part of the result. Accuracy is reported on 22--46 selected days out of 80, not on all days. A model can increase selected accuracy by making fewer calls, especially when the calibration sample is small or the threshold was chosen after inspecting outcomes. Coverage and accuracy must therefore be reported together, and future work should use nested validation to select $\tau$ independently of the final test window.
+
+Several implementation details limit the strength of the leakage claim. The function named \texttt{verify\_no\_leakage} counts columns and prints a message; it does not inspect dependency graphs or prove that every feature is causal. More importantly, \texttt{fit()} vertically stacks all equity feature arrays before calling \texttt{\_build\_windows()}, so the shown code does not construct windows independently per ticker. Although the first window after a concatenation boundary contains observations from the preceding ticker, the corresponding boundary rows are only a small fraction of the sample, and the issue should nevertheless be repaired before publication. The scaler is fitted before the 80/20 split, and the meta-learner and calibrator share the same validation block, which means the calibration estimate is not an independent estimate of out-of-sample calibration. Finally, the date range ending in 2026 and the mutable nature of online Yahoo Finance downloads make exact future reproduction dependent on archived data.
+
+\section{Conclusion}
+HPT--DTE is a compact and interpretable hybrid for studying cross-asset financial direction prediction. Its novelty as an engineering composition lies in connecting a phase-shifted time representation to FFT tokens with cross-attention, then combining that neural score with shallow tree signals and a calibrated reject option. The mathematics clarifies what each block can and cannot guarantee: FFT features expose harmonic coordinates, attention learns cross-domain weights, gates control admission of spectral information, isotonic regression optimizes validation squared error among monotone maps, and thresholding trades coverage for conditional accuracy under ideal calibration.
+
+The reported results are promising as an exploratory zero-shot experiment, particularly the TSLA selective accuracy and the non-trivial coverage on unseen cryptoassets. They are not sufficient to establish a deployable financial edge. The next version should build windows per asset, fit preprocessing strictly within the training fold, reserve a separate calibration fold or use cross-fitting, report confidence intervals and proper scoring rules, add transaction costs, compare against persistence and majority-class baselines, and conduct ablations for FFT, phase shifts, gating, regime conditioning, and calibration. Those changes would convert an interesting prototype into a more defensible empirical study.
+
+\section*{Reproducibility and Research Disclaimer}
+The implementation, model bundle, logs, and README are available in the public repository [1]. The data source is downloaded at runtime, so the exact dataset should be archived with a release. This manuscript describes an academic prototype and is not financial, investment, or trading advice. Historical or selective accuracy does not guarantee future performance, and the implementation should not be used for live trading without independent validation, risk controls, and professional review.
+
+\begin{thebibliography}{9}
+\bibitem{repo} A. Varma, ``HPT-DTE-CAFP: Harmonic Phase Transformer with Decision Tree Ensemble for Cross-Asset Financial Prediction,'' GitHub repository, 2026. \url{https://github.com/ak495867/HPT-DTE-CAFP}.
+\bibitem{vaswani} A. Vaswani et al., ``Attention Is All You Need,'' arXiv:1706.03762, 2017. \url{https://arxiv.org/abs/1706.03762}.
+\bibitem{platt} J. Platt, ``Probabilistic Outputs for Support Vector Machines and Comparisons to Regularized Likelihood Methods,'' in \emph{Advances in Large Margin Classifiers}, 1999.
+\bibitem{zadrozny} B. Zadrozny and C. Elkan, ``Transforming Classifier Scores into Accurate Multiclass Probability Estimates,'' in \emph{Proc. KDD}, 2002. \url{https://dl.acm.org/doi/10.1145/775047.775151}.
+\bibitem{niculescu} A. Niculescu-Mizil and R. Caruana, ``Predicting Good Probabilities with Supervised Learning,'' in \emph{Proc. ICML}, 2005. \url{https://dl.acm.org/doi/10.1145/1102351.1102430}.
+\bibitem{fourier} J. Fourier, \emph{Th\'eorie analytique de la chaleur}, 1822.
+\bibitem{tsay} R. S. Tsay, \emph{Analysis of Financial Time Series}, 3rd ed., Wiley, 2010.
+\bibitem{scikit} F. Pedregosa et al., ``Scikit-learn: Machine Learning in Python,'' \emph{JMLR}, vol. 12, pp. 2825--2830, 2011. \url{https://jmlr.org/papers/v12/pedregosa11a.html}.
+\end{thebibliography}
+\end{document}
