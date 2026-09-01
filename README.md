@@ -1,6 +1,8 @@
 # Harmonic Phase Transformer for Financial Prediction
 
 >  RESEARCH ONLY. NOT FINANCIAL ADVICE. See [Disclaimer](#disclaimer) below.
+> ## Mathematical Details
+> See **[MATH.md](MATH.md)** for the complete mathematical foundations and derivations.
 
 ## What Is This?
 
