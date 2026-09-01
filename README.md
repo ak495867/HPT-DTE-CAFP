@@ -79,15 +79,14 @@ Trained **only** on 9 equities (2017-2023). Never saw test assets or test period
 
 ## Disclaimer
 
-**THIS CODE IS STRICTLY FOR ACADEMIC RESEARCH AND EDUCATIONAL PURPOSES.**
+**READ BEFORE USING**
 
-- This is **not** financial, investment, or trading advice.
-- Past backtest performance does **not** guarantee future results.
-- The model does **not** account for slippage, fees, or market impact.
-- The authors assume **zero liability** for any financial losses.
-- **Do not** use this for live trading without independent validation and professional consultation.
+*   **Research Only:** This code is an experimental machine learning prototype for academic and educational purposes only. It is **not** intended for live trading.
+*   **Not Financial Advice:** Nothing herein constitutes financial, investment, or trading advice. Do not use model outputs to make real-world financial decisions.
+*   **No Guarantees:** Past performance does not guarantee future results. This model does not account for real-world trading costs (fees, slippage, spread).
+*   **No Liability:** This software is provided "AS IS". The authors assume **zero liability** for any financial losses or damages arising from its use. 
 
-**You use this code entirely at your own risk.**
+**YOU USE THIS CODE ENTIRELY AT YOUR OWN RISK.** If you do not agree, do not use this software.
 
 ---
 
