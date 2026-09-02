@@ -1,4 +1,5 @@
 # Harmonic Phase Transformer for Financial Prediction
+[![Paper](https://img.shields.io/badge/PAPER-HPT--DTE-000000?style=for-the-badge&logo=academia&logoColor=white)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7389258)
 
 >  RESEARCH ONLY. NOT FINANCIAL ADVICE. See [Disclaimer](#disclaimer) below.
 > ## Mathematical Details
