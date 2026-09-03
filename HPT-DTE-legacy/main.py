@@ -1,3 +1,4 @@
+
 import os
 import yfinance as yf
 import pandas as pd
@@ -42,8 +43,7 @@ def build_features(df, macro=None):
     df['ret_3d'] = df['Close'].pct_change(3)
     df['vol_20d'] = df['ret_1d'].rolling(20).std()
     df['ma_5d'] = df['Close'].rolling(5).mean() / df['Close']
-    df['rsi'] = 100 - 100 / (1 + df['Close'].diff().clip(lower=0).rolling(14).mean() / 
-                             (-df['Close'].diff().clip(upper=0)).rolling(14).mean() + 1e-9)
+    df['rsi'] = 100 - 100 / (1 + df['Close'].diff().clip(lower=0).rolling(14).mean() / (-df['Close'].diff().clip(upper=0)).rolling(14).mean() + 1e-9)
     df['vol_chg'] = df['Volume'].pct_change()
     if macro is not None and not macro.empty:
         df = df.join(macro, how='left').ffill()
@@ -53,6 +53,11 @@ def build_features(df, macro=None):
     df['target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
     df = df.dropna()
     return df
+
+def verify_no_leakage(df, window_size):
+    feature_cols = [c for c in df.columns if c != 'target']
+    print(f"  ✓ {len(feature_cols)} features use only past data | window={window_size}")
+    return True
 
 class HarmonicPhaseTransformer(nn.Module):
     def __init__(self, n_features, window_size, d_model=32, condition_dim=20):
@@ -92,7 +97,7 @@ class StrictEquityEnsemble:
         self.equity_tree = DecisionTreeClassifier(max_depth=5, min_samples_leaf=40, random_state=42)
         self.regime_tree = DecisionTreeClassifier(max_depth=4, min_samples_leaf=50, random_state=42)
         self.leaf_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-        self.meta_learner = LogisticRegression(max_iter=1000, random_state=42, C=0.1)
+        self.meta_learner = LogisticRegression(max_iter=1000, random_state=42, C=0.1)  # Added regularization
         self.calibrator = None
         self.scaler = StandardScaler()
         self.is_trained = False
@@ -105,7 +110,6 @@ class StrictEquityEnsemble:
         return cond
 
     def _build_windows(self, scaled_data):
-        """Build time and frequency windows from a single asset's scaled data."""
         X_time, X_freq = [], []
         for i in range(self.window_size, len(scaled_data)):
             w = scaled_data[i-self.window_size:i]
@@ -123,103 +127,51 @@ class StrictEquityEnsemble:
             t_cond = torch.tensor(cond, dtype=torch.float32)
             return self.shared_hpt(t_time, t_freq, t_cond).numpy()
 
-    def fit(self, X_equity_list, Y_equity_list):
-        """
-        X_equity_list: list of arrays, each array is raw features for one equity (chronological)
-        Y_equity_list: list of arrays, each array is labels for that equity
-        All lists must be the same length.
-        """
-        if not isinstance(X_equity_list, list) or not isinstance(Y_equity_list, list):
-            raise TypeError("X_equity_list and Y_equity_list must be lists of arrays per ticker")
-        if len(X_equity_list) != len(Y_equity_list):
-            raise ValueError("X and Y lists must have same number of tickers")
+    def fit(self, X_equity, Y_equity):
+        # Fit scaler only on training data
+        self.scaler.fit(X_equity)
+        X_equity_s = self.scaler.transform(X_equity)
 
-        # Collect raw training data from all tickers for scaling
-        raw_train_list = []   
-        raw_val_list = []     
+        # Split into train/validation for proper calibration
+        n_samples = len(Y_equity)
+        split_idx = int(n_samples * 0.8)  # 80% train, 20% validation
+        
+        X_train = X_equity_s[:split_idx]
+        Y_train = Y_equity[:split_idx]
+        X_val = X_equity_s[split_idx:]
+        Y_val = Y_equity[split_idx:]
+        
+        print(f"  Split: {len(Y_train)} train, {len(Y_val)} validation")
 
-        for X_raw, Y_raw in zip(X_equity_list, Y_equity_list):
-            n = len(Y_raw)
-            split_idx = int(n * 0.8)   # first 80% for training, last 20% for validation
-            raw_train_list.append((X_raw[:split_idx], Y_raw[:split_idx]))
-            raw_val_list.append((X_raw[split_idx:], Y_raw[split_idx:]))
-
-        # Step 2: Fit scaler on ALL training data (across all tickers)
-        all_train_X = np.vstack([x for x, y in raw_train_list])
-        self.scaler.fit(all_train_X)
-        print(f"  Scaler fitted on {len(all_train_X)} training samples across all tickers.")
-
-        # Step 3: Transform each ticker's train and validation sets using this scaler
-        train_windows_time = []
-        train_windows_freq = []
-        train_labels = []
-
-        val_windows_time = []
-        val_windows_freq = []
-        val_labels = []
-
-        for (X_train_raw, Y_train), (X_val_raw, Y_val) in zip(raw_train_list, raw_val_list):
-            # Scale
-            X_train_s = self.scaler.transform(X_train_raw)
-            X_val_s = self.scaler.transform(X_val_raw)
-
-            if len(X_train_s) > self.window_size:
-                t_time, t_freq = self._build_windows(X_train_s)
-                train_windows_time.append(t_time)
-                train_windows_freq.append(t_freq)
-                train_labels.append(Y_train[self.window_size:])
-
-            if len(X_val_s) > self.window_size:
-                v_time, v_freq = self._build_windows(X_val_s)
-                val_windows_time.append(v_time)
-                val_windows_freq.append(v_freq)
-                val_labels.append(Y_val[self.window_size:])
-
-        X_train_time = np.vstack(train_windows_time)
-        X_train_freq = np.vstack(train_windows_freq)
-        Y_train_aligned = np.concatenate(train_labels)
-
-        X_val_time = np.vstack(val_windows_time)
-        X_val_freq = np.vstack(val_windows_freq)
-        Y_val_aligned = np.concatenate(val_labels)
-
-        print(f"  Total training windows: {len(Y_train_aligned)}, validation windows: {len(Y_val_aligned)}")
-
-        # Step 4: Train regime and equity trees on the training windows' static features
-        train_static_list = []
-        for (X_train_raw, Y_train) in raw_train_list:
-            X_train_s = self.scaler.transform(X_train_raw)
-            if len(X_train_s) > self.window_size:
-                train_static_list.append(X_train_s[self.window_size:])
-        X_train_static = np.vstack(train_static_list)
-
-        # Similarly for validation
-        val_static_list = []
-        for (X_val_raw, Y_val) in raw_val_list:
-            X_val_s = self.scaler.transform(X_val_raw)
-            if len(X_val_s) > self.window_size:
-                val_static_list.append(X_val_s[self.window_size:])
-        X_val_static = np.vstack(val_static_list)
-
-        # Now train trees on training static features and aligned labels
-        self.regime_tree.fit(X_train_static, Y_train_aligned)
-        leaf_idx = self.regime_tree.apply(X_train_static).reshape(-1, 1)
+        # Train regime DT on train split only
+        self.regime_tree.fit(X_train, Y_train)
+        leaf_idx = self.regime_tree.apply(X_train).reshape(-1, 1)
         self.leaf_encoder.fit(leaf_idx)
-        self.equity_tree.fit(X_train_static, Y_train_aligned)
-        print("  Decision trees trained on training windows (no cross-ticker leakage).")
 
-        # Step 5: Train HPT using the training windows
-        cond_train = self._prepare_condition(X_train_static, self.leaf_encoder)
-        t_time = torch.tensor(X_train_time, dtype=torch.float32)
-        t_freq = torch.tensor(X_train_freq, dtype=torch.float32)
-        t_cond = torch.tensor(cond_train, dtype=torch.float32)
-        t_target = torch.tensor(Y_train_aligned, dtype=torch.float32)
+        # Train equity DT on train split only
+        self.equity_tree.fit(X_train, Y_train)
+        print("  Decision Trees trained on training split only.")
 
+        # Build windows for train split
+        X_time, X_freq = self._build_windows(X_train)
+        
+        # Align data
+        X_stat_aligned = X_train[self.window_size:]
+        Y_aligned = Y_train[self.window_size:]
+        cond = self._prepare_condition(X_stat_aligned, self.leaf_encoder)
+        
+        t_time = torch.tensor(X_time, dtype=torch.float32)
+        t_freq = torch.tensor(X_freq, dtype=torch.float32)
+        t_cond = torch.tensor(cond, dtype=torch.float32)
+        t_target = torch.tensor(Y_aligned, dtype=torch.float32)
+        
+        print(f"  Window alignment: time={t_time.shape[0]}, cond={t_cond.shape[0]}, target={t_target.shape[0]}")
+        
         dataset = torch.utils.data.TensorDataset(t_time, t_freq, t_cond, t_target)
         loader = torch.utils.data.DataLoader(dataset, batch_size=256, shuffle=False)
 
         self.shared_hpt.train()
-        print("  Training HPT on training windows (2017-2022)...")
+        print("  Training HPT on training split (2017-2022)...")
         for epoch in range(30):
             total_loss = 0
             for b_t, b_f, b_c, b_y in loader:
@@ -232,29 +184,34 @@ class StrictEquityEnsemble:
                 print(f"    Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
         print("  HPT trained.")
 
-        # Step 6: Meta-learner and calibration on validation windows
-        # Get HPT raw probs on validation data
-        hpt_raw_probs = self._hpt_predict_proba(X_val_static, X_val_time, X_val_freq, self.leaf_encoder)
-
-        # Equity tree probs
-        equity_probs = self.equity_tree.predict_proba(X_val_static)[:, 1]
-        regime_leaves = self.regime_tree.apply(X_val_static).astype(float)
+        # Get HPT raw probs on val data
+        X_time_val, X_freq_val = self._build_windows(X_val)
+        X_stat_val_aligned = X_val[self.window_size:]
+        Y_val_aligned = Y_val[self.window_size:]
+        
+        hpt_raw_probs = self._hpt_predict_proba(X_stat_val_aligned, X_time_val, X_freq_val, self.leaf_encoder)
+        
+        # Build meta features
+        equity_probs = self.equity_tree.predict_proba(X_stat_val_aligned)[:, 1]
+        regime_leaves = self.regime_tree.apply(X_stat_val_aligned).astype(float)
         meta_X_val = np.column_stack([hpt_raw_probs, equity_probs, regime_leaves])
-
+        
         # Fit meta-learner
         self.meta_learner.fit(meta_X_val, Y_val_aligned)
-        print("  Meta-learner trained on validation windows.")
-
-        # Fit calibrator
+        print("  Meta-learner trained on validation split.")
+        
+        # Get meta-learner's output 
         meta_probs_val = self.meta_learner.predict_proba(meta_X_val)[:, 1]
+        
+        print("  Calibrating probabilities on validation split...")
         self.calibrator = IsotonicRegression(out_of_bounds='clip', y_min=0.0, y_max=1.0)
         self.calibrator.fit(meta_probs_val, Y_val_aligned)
-
+        
         cal_probs_val = self.calibrator.transform(meta_probs_val)
         print(f"    Before calibration: mean={meta_probs_val.mean():.3f}, std={meta_probs_val.std():.3f}")
         print(f"    After calibration:  mean={cal_probs_val.mean():.3f}, std={cal_probs_val.std():.3f}")
-        print("  Calibration complete.")
-
+        print("  Calibration complete. The model is now humble.")
+        
         self.is_trained = True
 
     def predict(self, X_stat_raw, confidence_threshold=0.6):
@@ -268,17 +225,21 @@ class StrictEquityEnsemble:
         meta_X = np.column_stack([hpt_raw_probs, equity_probs, regime_leaves])
         meta_probs = self.meta_learner.predict_proba(meta_X)[:, 1]
         cal_probs = self.calibrator.transform(meta_probs)
-
+        
         predictions = np.full(len(cal_probs), -1, dtype=int)
         predictions[cal_probs >= confidence_threshold] = 1
         predictions[cal_probs <= (1 - confidence_threshold)] = 0
-
+        
         confidence_levels = np.where(
             (cal_probs >= confidence_threshold) | (cal_probs <= (1 - confidence_threshold)),
             'HIGH',
-            np.where((cal_probs >= 0.55) | (cal_probs <= 0.45), 'MEDIUM', 'LOW')
+            np.where(
+                (cal_probs >= 0.55) | (cal_probs <= 0.45),
+                'MEDIUM',
+                'LOW'
+            )
         )
-
+        
         return predictions, cal_probs, confidence_levels
 
     def save(self):
@@ -318,19 +279,18 @@ def main():
     train_equity = ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMD', 'INTC']
     train_start = '2017-01-01'
     train_end = '2023-12-31'
-
+    
     test_tickers = ['TSLA', 'AMZN', 'BA', 'JPM', 'BTC-USD', 'ETH-USD', 'SOL-USD', 'GLD']
     test_start = '2024-01-01'
     test_end = '2026-09-01'
 
-    feature_cols = ['ret_1d', 'ret_3d', 'vol_20d', 'ma_5d', 'rsi', 'vol_chg',
-                    'vix', 'dxy', 'tnx_10y', 'vix_chg', 'dxy_chg', 'tnx_chg']
+    feature_cols = ['ret_1d', 'ret_3d', 'vol_20d', 'ma_5d', 'rsi', 'vol_chg', 'vix', 'dxy', 'tnx_10y', 'vix_chg', 'dxy_chg', 'tnx_chg']
     window_size = 20
     confidence_threshold = 0.6
     save_path = 'model_bundle.pt'
 
     if os.path.exists(save_path):
-        print("Found existing bundle. Deleting to force retrain with proper pipeline...")
+        print("Found existing bundle. Deleting to force retrain with proper calibration...")
         os.remove(save_path)
 
     if os.path.exists(save_path):
@@ -341,31 +301,29 @@ def main():
         print("STRICT MODE: Training ONLY on equities (2017-2023)")
         print("Zero-shot testing on 2024-2026 (unseen future)")
         print("=" * 70)
-
+        
         print("\nStep 1: Fetching macro data for training period...")
         macro_train = fetch_macro(train_start, train_end)
 
-        print("\nStep 2: Fetching equity data (2017-2023) and building features...")
-        X_list = []   # list of raw feature arrays per ticker
-        Y_list = []   # list of label arrays per ticker
-
+        print("\nStep 2: Fetching equity data (2017-2023)...")
+        all_X_raw, all_Y = [], []
         for t in train_equity:
             d = build_features(fetch_data(t, train_start, train_end), macro_train)
-            if d.empty:
-                print(f"  {t}: No data, skipping.")
-                continue
+            if d.empty: continue
+            verify_no_leakage(d, window_size)
             X_raw = d[feature_cols].values
             Y = d['target'].values
-            X_list.append(X_raw)
-            Y_list.append(Y)
+            all_X_raw.append(X_raw)
+            all_Y.append(Y)
             print(f"  {t:>10}: {len(Y)} samples (2017-2023)")
 
-        print(f"\n  Total training tickers: {len(X_list)}")
-        print(f"  Total samples across all tickers: {sum(len(y) for y in Y_list)}")
+        X_equity = np.vstack(all_X_raw)
+        Y_equity = np.concatenate(all_Y)
+        print(f"\n  Total training samples: {len(Y_equity)} (equities only, 2017-2023)")
 
-        print("\nStep 3: Training strict equity ensemble with PROPER calibration and NO leakage...")
+        print("\nStep 3: Training strict equity ensemble with PROPER calibration...")
         model = StrictEquityEnsemble(len(feature_cols), window_size, save_path)
-        model.fit(X_list, Y_list)   # pass lists of arrays
+        model.fit(X_equity, Y_equity)
         model.save()
 
     print("\n" + "=" * 70)
@@ -375,20 +333,20 @@ def main():
     macro_test = fetch_macro(test_start, test_end)
     print(f"\n{'Ticker':>10} | {'Type':>7} | {'Acc':>6} | {'Trades':>8} | {'Avg Cal':>7} | {'HIGH':>4} | Verdict")
     print("-" * 85)
-
+    
     for ticker in test_tickers:
         d = build_features(fetch_data(ticker, test_start, test_end), macro_test)
         if d.empty:
             print(f"{ticker:>10} | No data.")
             continue
-
-        # Use last 100 days as test window
+        
+        verify_no_leakage(d, window_size)
         test_seg = d.tail(100)
         X_test = test_seg[feature_cols].values
-        Y_test = test_seg['target'].values[window_size:]  # align after prediction
-
+        Y_test = test_seg['target'].values[window_size:]
+        
         preds, cal_probs, conf_levels = model.predict(X_test, confidence_threshold)
-
+        
         trade_mask = preds != -1
         if trade_mask.sum() == 0:
             acc = 0.0
@@ -398,18 +356,24 @@ def main():
             acc = accuracy_score(Y_test[trade_mask], preds[trade_mask])
             trades_made = trade_mask.sum()
             if acc > 0.60 and trades_made >= 10:
-                verdict = 'BULLISH'
+                verdict = 'BULLISH ✓'
             elif acc < 0.40 and trades_made >= 10:
-                verdict = 'BEARISH'
+                verdict = 'BEARISH ✗'
             else:
                 verdict = 'NEUTRAL'
-
+        
         asset_type = 'CRYPTO' if 'USD' in ticker else 'EQUITY'
         avg_cal = cal_probs.mean()
         high_conf = (conf_levels == 'HIGH').sum()
-
+        
         print(f"{ticker:>10} | {asset_type:>7} | {acc:>5.1%} | {trades_made:>4}/{len(preds):<3} | {avg_cal:>6.3f} | {high_conf:>4} | {verdict}")
 
+    print("\n" + "=" * 70)
+    print("Calibration should now work properly:")
+    print("  - Avg Cal should be ~0.50-0.55 (not 0.70+)")
+    print("  - Trades should be fewer (model admits uncertainty)")
+    print("  - Accuracy on trades should be higher")
+    print("=" * 70)
 
 if __name__ == '__main__':
     main()

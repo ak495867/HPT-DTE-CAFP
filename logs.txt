@@ -1,3 +1,4 @@
+Found existing bundle. Deleting to force retrain with proper pipeline...
 ======================================================================
 STRICT MODE: Training ONLY on equities (2017-2023)
 Zero-shot testing on 2024-2026 (unseen future)
@@ -6,45 +7,36 @@ Zero-shot testing on 2024-2026 (unseen future)
 Step 1: Fetching macro data for training period...
   Fetching macro data (VIX, DXY, 10Y)...
 
-Step 2: Fetching equity data (2017-2023)...
-  ✓ 17 features use only past data | window=20
+Step 2: Fetching equity data (2017-2023) and building features...
          SPY: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
          QQQ: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
         NVDA: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
         AAPL: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
         MSFT: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
        GOOGL: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
         META: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
          AMD: 1740 samples (2017-2023)
-  ✓ 17 features use only past data | window=20
         INTC: 1740 samples (2017-2023)
 
-  Total training samples: 15660 (equities only, 2017-2023)
+  Total training tickers: 9
+  Total samples across all tickers: 15660
 
-Step 3: Training strict equity ensemble with PROPER calibration...
-  Split: 12528 train, 3132 validation
-  Decision Trees trained on training split only.
-  Window alignment: time=12508, cond=12508, target=12508
-  Training HPT on training split (2017-2022)...
-    Epoch 5, Loss: 0.6605
-    Epoch 10, Loss: 0.6202
-    Epoch 15, Loss: 0.5786
-    Epoch 20, Loss: 0.5472
-    Epoch 25, Loss: 0.5009
-    Epoch 30, Loss: 0.4724
+Step 3: Training strict equity ensemble with PROPER calibration and NO leakage...
+  Scaler fitted on 12528 training samples across all tickers.
+  Total training windows: 12348, validation windows: 2952
+  Decision trees trained on training windows (no cross-ticker leakage).
+  Training HPT on training windows (2017-2022)...
+    Epoch 5, Loss: 0.6641
+    Epoch 10, Loss: 0.6155
+    Epoch 15, Loss: 0.5717
+    Epoch 20, Loss: 0.5323
+    Epoch 25, Loss: 0.4948
+    Epoch 30, Loss: 0.4629
   HPT trained.
-  Meta-learner trained on validation split.
-  Calibrating probabilities on validation split...
-    Before calibration: mean=0.512, std=0.125
-    After calibration:  mean=0.512, std=0.156
-  Calibration complete. The model is now humble.
+  Meta-learner (Random Forest) trained on validation windows.
+    Before calibration: mean=0.522, std=0.053
+    After calibration:  mean=0.523, std=0.096
+  Calibration complete.
 
   Single-file bundle saved to 'model_bundle.pt'.
 
@@ -55,26 +47,11 @@ ZERO-SHOT TEST: 2024-2026 | Confidence Threshold: 0.6
 
     Ticker |    Type |    Acc |   Trades | Avg Cal | HIGH | Verdict
 -------------------------------------------------------------------------------------
-  ✓ 17 features use only past data | window=20
-      TSLA |  EQUITY | 60.0% |   30/80  |  0.561 |   30 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-      AMZN |  EQUITY | 46.9% |   32/80  |  0.590 |   32 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-        BA |  EQUITY | 37.9% |   29/80  |  0.587 |   29 | BEARISH ✗
-  ✓ 17 features use only past data | window=20
-       JPM |  EQUITY | 45.5% |   22/80  |  0.559 |   22 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-   BTC-USD |  CRYPTO | 52.5% |   40/80  |  0.610 |   40 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-   ETH-USD |  CRYPTO | 53.6% |   28/80  |  0.557 |   28 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-   SOL-USD |  CRYPTO | 51.4% |   37/80  |  0.604 |   37 | NEUTRAL
-  ✓ 17 features use only past data | window=20
-       GLD |  EQUITY | 52.2% |   46/80  |  0.645 |   46 | NEUTRAL
-
-======================================================================
-Calibration should now work properly:
-  - Avg Cal should be ~0.50-0.55 (not 0.70+)
-  - Trades should be fewer (model admits uncertainty)
-  - Accuracy on trades should be higher
-======================================================================
+      TSLA |  EQUITY | 37.5% |    8/80  |  0.525 |    8 | NEUTRAL
+      AMZN |  EQUITY | 87.5% |    8/80  |  0.530 |    8 | NEUTRAL
+        BA |  EQUITY | 60.0% |    5/80  |  0.526 |    5 | NEUTRAL
+       JPM |  EQUITY | 50.0% |    8/80  |  0.519 |    8 | NEUTRAL
+   BTC-USD |  CRYPTO | 25.0% |   12/80  |  0.531 |   12 | BEARISH
+   ETH-USD |  CRYPTO | 100.0% |    2/80  |  0.522 |    2 | NEUTRAL
+   SOL-USD |  CRYPTO | 50.0% |   12/80  |  0.538 |   12 | NEUTRAL
+       GLD |  EQUITY | 53.3% |   15/80  |  0.546 |   15 | NEUTRAL

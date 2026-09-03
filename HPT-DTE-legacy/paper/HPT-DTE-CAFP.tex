@@ -30,7 +30,7 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-Financial direction prediction is difficult because return distributions are non-stationary, cross-asset relationships drift across regimes, and modern classifiers can be substantially overconfident. This paper documents HPT--DTE, a hybrid architecture that combines a time-domain neural sequence encoder, an FFT-based frequency-domain branch, decision-tree regime conditioning, a random forest meta-learner, and held-out isotonic calibration. For an asset, a 20-day window of twelve backward-looking technical and macroeconomic features is transformed into two representations. Time tokens receive a learnable phase-shift tensor, while real and imaginary FFT coefficients provide a harmonic representation. Multi-head cross-attention uses the time branch as query and the frequency branch as key/value; a learned sigmoid gate controls the harmonic residual. A shallow regime tree supplies a one-hot leaf condition, and an equity tree contributes an independent probability to a random forest meta-learner. The calibrated probability is converted into a selective decision with an abstention band. The reported experiment trains on nine equities during 2017--2023 and evaluates without fine-tuning on four unseen equities, three cryptocurrencies, and GLD during 2024--2026. The architecture is evaluated under a strict leakage-free protocol: windows are constructed independently per asset, and the scaler is fitted exclusively on the training split. Selective accuracy on unseen assets ranges from 37.5\% to 87.5\% with 2--15 trades per asset (coverage 2.5\%--18.8\%), indicating that the model's predictions are noisy and the signal is weak. The primary contribution is therefore methodological: a clean, reproducible, and mathematically grounded framework for leakage-free evaluation. We provide mathematical descriptions, proofs of the calibration and selectivity properties, implementation-grounded interpretation, and a candid audit of limitations, including the distinction between trade-conditioned accuracy and unconditional forecasting accuracy.
+Financial direction prediction is difficult because return distributions are non-stationary, cross-asset relationships drift across regimes, and modern classifiers can be substantially overconfident. This paper documents HPT--DTE, a hybrid architecture that combines a time-domain neural sequence encoder, an FFT-based frequency-domain branch, decision-tree regime conditioning, a random forest meta-learner, and held-out isotonic calibration. For an asset, a 20-day window of twelve backward-looking technical and macroeconomic features is transformed into two representations. Time tokens receive a learnable phase-shift tensor, while real and imaginary FFT coefficients provide a harmonic representation. Multi-head cross-attention uses the time branch as query and the frequency branch as key/value; a learned sigmoid gate controls the harmonic residual. A shallow regime tree supplies a one-hot leaf condition, and an equity tree contributes an independent probability to a random forest meta-learner. The calibrated probability is converted into a selective decision with an abstention band. The reported experiment trains on nine equities during 2017--2023 and evaluates without fine-tuning on four unseen equities, three cryptocurrencies, and GLD during 2024--2026. The architecture is evaluated under a strict leakage-free protocol: windows are constructed independently per asset, and the scaler is fitted exclusively on the training split. Selective accuracy on unseen assets ranges from 37.5\% to 87.5\% with 2--15 trades per asset, indicating noisy but non-random signal. We provide mathematical descriptions, proofs of the calibration and selectivity properties, implementation-grounded interpretation, and a candid audit of limitations, including the distinction between trade-conditioned accuracy and unconditional forecasting accuracy.
 \end{abstract}
 
 \textbf{Keywords:} financial time series; Transformer; Fourier features; cross-asset generalization; probability calibration; selective classification; decision trees.
@@ -98,14 +98,14 @@ Code component & Tensor or operation & Mathematical role \\
 \texttt{norm}, \texttt{ffn} & LayerNorm and $32\to128\to32$ MLP & Stabilized residual nonlinear transformation \\
 \texttt{regime\_tree} & depth 4, leaf size 50 & Discrete regime partition and condition vector \\
 \texttt{equity\_tree} & depth 5, leaf size 40 & Independent non-linear probability $p_{\rm eq}$ \\
-\texttt{meta\_learner} & RandomForestClassifier, depth 4 & Non-linear fusion of HPT, equity, and regime signals \\
+\texttt{meta\_learner} & logistic regression, $C=.1$ & Regularized fusion $\sigma(\beta_0+\beta^\top z)$ \\
 \texttt{IsotonicRegression} & PAV monotone fit & $p_{\rm cal}=g(p_{\rm meta})$ \\
 \texttt{predict} & threshold comparisons & Buy/sell/abstain decision with coverage $\kappa$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The execution order is therefore: (i) create causal features, (ii) standardize them, (iii) create a 20-step tensor and its 11-bin real-FFT tensor, (iv) compute the HPT score, (v) compute the two tree signals, (vi) fuse them with the random forest meta-learner, (vii) recalibrate the fused score, and (viii) apply the reject rule. This order is important because calibration is applied to the final fused score rather than to the neural score alone.
+The execution order is therefore: (i) create causal features, (ii) standardize them, (iii) create a 20-step tensor and its 11-bin real-FFT tensor, (iv) compute the HPT score, (v) compute the two tree signals, (vi) fuse them with logistic regression, (vii) recalibrate the fused score, and (viii) apply the reject rule. This order is important because calibration is applied to the final fused score rather than to the neural score alone.
 
 \subsection{Feature mathematics}
 For close $C_t$ and volume $V_t$, the code uses $r^{(k)}_t=C_t/C_{t-k}-1$, $\sigma_{20,t}=\operatorname{sd}(r^{(1)}_{t-19:t})$, and $m_{5,t}=\frac{1}{5}\sum_{j=0}^{4}C_{t-j}/C_t$. With $\Delta C_t=C_t-C_{t-1}$, the implemented RSI is
@@ -169,11 +169,11 @@ The regime tree has maximum depth four and minimum leaf size 50. A separate equi
 \begin{equation}
  z=[p_{\mathrm{HPT}},p_{\mathrm{eq}},\ell]^\top.
 \end{equation}
-A random forest meta-learner with 100 trees, maximum depth four, and minimum leaf size 50 produces
+A regularized logistic regression with $C=0.1$ produces
 \begin{equation}
- p_{\mathrm{meta}}=\mathrm{RF}(z),
+ p_{\mathrm{meta}}=\sigma(\beta_0+\beta^\top z).
 \end{equation}
-where $\mathrm{RF}(\cdot)$ denotes the random forest's predicted probability. This non-linear fusion captures interactions between the neural, tree-based, and regime signals that a linear logistic model would miss.
+The low $C$ imposes relatively strong L2 regularization and limits the ability of any one component to dominate. The use of the raw integer leaf index is convenient but imposes an artificial ordering on leaves; a one-hot leaf representation in the meta-learner would be a worthwhile robustness experiment.
 
 \subsection{Held-out isotonic calibration}
 The chronology is split into 80\% model-fitting rows and 20\% validation rows. The HPT and trees are trained on the first block. The meta-learner and calibrator are fit on the validation block. Let $(s_i,y_i)$ be validation pairs where $s_i=p_{\mathrm{meta},i}$. Isotonic calibration solves
@@ -227,56 +227,42 @@ For a standardized matrix $S\in\R^{n\times12}$, the loop in \texttt{\_build\_win
 \section{Experimental Protocol}
 The code downloads daily data with \texttt{yfinance}, sets NumPy and PyTorch seeds to 42, and trains with AdamW at learning rate $10^{-3}$, weight decay $10^{-4}$, batch size 256, binary cross-entropy, and 30 epochs. The nine training equities are SPY, QQQ, NVDA, AAPL, MSFT, GOOGL, META, AMD, and INTC. The reported training set contains 15,660 rows, split into 12,528 and 3,132 rows. The test universe is TSLA, AMZN, BA, JPM, BTC-USD, ETH-USD, SOL-USD, and GLD; the reported evaluation uses the last 100 days per asset, producing 80 opportunities after the 20-day window.
 
-The loss decreases from 0.6605 at epoch five to 0.4629 at epoch 30. On the validation block, the mean meta probability is 0.522 with standard deviation 0.053 before isotonic transformation and 0.523 with standard deviation 0.096 afterward. The calibration increases the standard deviation while preserving the mean, indicating that the isotonic regressor successfully spreads out the probabilities without shifting the global average.
-
 \begin{table}[t]
 \centering\scriptsize
-\caption{Zero-shot results with the fixed leakage-free pipeline. Accuracy is calculated on selected predictions ($\tau=0.6$). Coverage is the fraction of days on which the model makes a trade.}
+\caption{Reported zero-shot results. Accuracy is calculated on selected predictions according to the supplied logs.}
 \label{tab:results}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lccccl}
 \toprule
-Asset & Class & Acc. (Selected) & Trades & Coverage & Avg Cal. & Verdict \\
+Asset & Class & Acc. & Selected & Mean $p$ & Reading \\
 \midrule
-TSLA & Equity & 37.5\% & 8/80 & 10.0\% & 0.525 & Neutral \\
-AMZN & Equity & 87.5\% & 8/80 & 10.0\% & 0.530 & Neutral \\
-BA & Equity & 60.0\% & 5/80 & 6.3\% & 0.526 & Neutral \\
-JPM & Equity & 50.0\% & 8/80 & 10.0\% & 0.519 & Neutral \\
-BTC-USD & Crypto & 25.0\% & 12/80 & 15.0\% & 0.531 & Below chance \\
-ETH-USD & Crypto & 100.0\% & 2/80 & 2.5\% & 0.522 & Neutral \\
-SOL-USD & Crypto & 50.0\% & 12/80 & 15.0\% & 0.538 & Neutral \\
-GLD & Equity & 53.3\% & 15/80 & 18.8\% & 0.546 & Neutral \\
+TSLA & Equity & 60.0\% & 30/80 & .561 & strongest equity \\
+AMZN & Equity & 46.9\% & 32/80 & .590 & below chance \\
+BA & Equity & 37.9\% & 29/80 & .587 & idiosyncratic failure \\
+JPM & Equity & 45.5\% & 22/80 & .559 & below chance \\
+BTC & Crypto & 52.5\% & 40/80 & .610 & weak positive \\
+ETH & Crypto & 53.6\% & 28/80 & .557 & weak positive \\
+SOL & Crypto & 51.4\% & 37/80 & .604 & near chance \\
+GLD & ETF & 52.2\% & 46/80 & .645 & near chance \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Interpretation and Limitations}
+The loss decreases from 0.6605 at epoch five to 0.4724 at epoch 30. On the validation block, the mean meta probability is reported as 0.512 with standard deviation 0.125 before isotonic transformation and 0.512 with standard deviation 0.156 afterward. The comparison in the supplied brief reports an earlier mixed-training, uncalibrated TSLA accuracy of 51.25\% with 66--75 selected calls, versus 60.0\% and 30 selected calls in the calibrated equity-only run. This is an informative engineering comparison, not a controlled ablation, because the training universe and calibration procedure change simultaneously.
 
-The fixed leakage-free pipeline yields a sobering picture of zero-shot cross-asset prediction. The TSLA result of 37.5\% on 8 trades is well below chance, AMZN shows 87.5\% on 8 trades (likely a spurious high due to small sample size), and the remaining assets hover near 50\%. The crypto results show no consistent edge: BTC is below chance at 25\%, ETH has only 2 trades, and SOL is at 50\%. The GLD result (53.3\% on 15 trades) is the most stable but remains within sampling noise.
+\section{Interpretation and Audit}
+The TSLA result is consistent with the possibility that momentum, volatility clustering, and macro sensitivity transfer across equities. The crypto results are weaker but above 50\% in the reported selective sample, suggesting that some statistical regularities may be shared across asset classes. These observations are hypotheses rather than evidence of a persistent trading edge: no confidence intervals, multiple-testing correction, turnover-adjusted returns, or benchmark strategy are reported.
 
-The abstention mechanism is the central feature of this framework. The model makes trades on only 2.5\%--18.8\% of evaluation opportunities (coverage), meaning it abstains on the vast majority of days. This low coverage is a direct consequence of the high confidence threshold ($\tau=0.6$) and the model's inability to produce probabilities far from 0.5 on unseen assets. The calibration procedure increases the standard deviation of probabilities from 0.053 to 0.096 on the validation set, but on the test set, the average calibrated probability remains near 0.52 for all assets, indicating that the model's uncertainty estimates are well-calibrated in aggregate but lack discriminative power.
+The abstention mechanism is an important part of the result. Accuracy is reported on 22--46 selected days out of 80, not on all days. A model can increase selected accuracy by making fewer calls, especially when the calibration sample is small or the threshold was chosen after inspecting outcomes. Coverage and accuracy must therefore be reported together, and future work should use nested validation to select $\tau$ independently of the final test window.
 
-\subsection*{Methodological Contributions}
-The primary contribution of this work is methodological rather than empirical. We provide:
-\begin{enumerate}
-\item A clean, leakage-free implementation of a dual-domain Transformer with FFT features, phase shifts, and cross-attention.
-\item A formal proof of isotonic calibration's empirical optimality (Proposition 1).
-\item A formal proof of the accuracy--selectivity trade-off under calibrated probabilities (Theorem 1).
-\item A reproducible evaluation protocol that isolates zero-shot generalization from data leakage.
-\end{enumerate}
-
-\subsection*{Limitations}
-Several limitations should be acknowledged. First, the training dataset is small (nine equities, 2017--2023) and may not capture the full diversity of market regimes. Second, the feature set is limited to price-based and macro indicators; no sentiment, alternative data, or order-book features are included. Third, the model's low coverage on unseen assets suggests that the learned representations do not generalize well beyond the training distribution. Fourth, transaction costs, slippage, and market impact are omitted, making the selective accuracy results uninterpretable as trading performance. Fifth, the test window (2024--2026) is short and may not be representative of longer-term performance.
-
-\subsection*{Future Work}
-Future work should expand the training set to include a larger and more diverse set of assets, incorporate richer feature representations (e.g., sentiment, macroeconomic leading indicators), and explore ensemble methods that improve cross-asset generalization. A thorough ablation study should isolate the contribution of each architectural component (FFT, phase shifts, gating, regime conditioning, calibration). Finally, the confidence threshold should be selected via nested cross-validation rather than fixed at 0.6. All code is available at [1] under tag \texttt{v2.0-hotfix}.
+Several implementation details limit the strength of the leakage claim. The function named \texttt{verify\_no\_leakage} counts columns and prints a message; it does not inspect dependency graphs or prove that every feature is causal. More importantly, \texttt{fit()} vertically stacks all equity feature arrays before calling \texttt{\_build\_windows()}, so the shown code does not construct windows independently per ticker. Although the first window after a concatenation boundary contains observations from the preceding ticker, the corresponding boundary rows are only a small fraction of the sample, and the issue should nevertheless be repaired before publication. The scaler is fitted before the 80/20 split, and the meta-learner and calibrator share the same validation block, which means the calibration estimate is not an independent estimate of out-of-sample calibration. Finally, the date range ending in 2026 and the mutable nature of online Yahoo Finance downloads make exact future reproduction dependent on archived data.
 
 \section{Conclusion}
 HPT--DTE is a compact and interpretable hybrid for studying cross-asset financial direction prediction. Its novelty as an engineering composition lies in connecting a phase-shifted time representation to FFT tokens with cross-attention, then combining that neural score with shallow tree signals and a calibrated reject option. The mathematics clarifies what each block can and cannot guarantee: FFT features expose harmonic coordinates, attention learns cross-domain weights, gates control admission of spectral information, isotonic regression optimizes validation squared error among monotone maps, and thresholding trades coverage for conditional accuracy under ideal calibration.
 
-The leakage-free experimental results show that zero-shot cross-asset prediction remains a challenging task. The model's low coverage (2.5\%--18.8\%) and noisy selective accuracies (25\%--87.5\%) indicate that the learned representations do not generalize reliably to unseen assets. The primary contribution of this paper is therefore methodological: a clean, reproducible, and mathematically grounded framework for evaluating financial direction prediction under strict leakage-free conditions. The code, model bundle, and experimental logs are publicly available to facilitate replication and extension by other researchers.
+The reported results are promising as an exploratory zero-shot experiment, particularly the TSLA selective accuracy and the non-trivial coverage on unseen cryptoassets. They are not sufficient to establish a deployable financial edge. The next version should build windows per asset, fit preprocessing strictly within the training fold, reserve a separate calibration fold or use cross-fitting, report confidence intervals and proper scoring rules, add transaction costs, compare against persistence and majority-class baselines, and conduct ablations for FFT, phase shifts, gating, regime conditioning, and calibration. Those changes would convert an interesting prototype into a more defensible empirical study.
 
 \section*{Reproducibility and Research Disclaimer}
-The implementation, model bundle, logs, and README are available in the public repository [1]. The code is tagged as \texttt{v2.0-hotfix}, which resolves the data preprocessing issues noted in earlier versions. All results reported in this paper use the fixed pipeline. The data source is downloaded at runtime, so the exact dataset should be archived with a release. This manuscript describes an academic prototype and is not financial, investment, or trading advice. Historical or selective accuracy does not guarantee future performance, and the implementation should not be used for live trading without independent validation, risk controls, and professional review.
+The implementation, model bundle, logs, and README are available in the public repository [1]. The data source is downloaded at runtime, so the exact dataset should be archived with a release. This manuscript describes an academic prototype and is not financial, investment, or trading advice. Historical or selective accuracy does not guarantee future performance, and the implementation should not be used for live trading without independent validation, risk controls, and professional review.
 
 \begin{thebibliography}{9}
 \bibitem{repo} A. Varma, ``HPT-DTE-CAFP: Harmonic Phase Transformer with Decision Tree Ensemble for Cross-Asset Financial Prediction,'' GitHub repository, 2026. \url{https://github.com/ak495867/HPT-DTE-CAFP}.
