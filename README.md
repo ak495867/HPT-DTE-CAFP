@@ -24,6 +24,7 @@
 > - Results are now **honest and reproducible**
 > 
 > **The results in this README reflect the fixed pipeline.** Earlier versions had inflated accuracies due to leakage and should not be used or cited.
+> Please read the full notice at [`NOTICE/04-09-2026.md`](NOTICE/04-09-2026.md) before using or citing this work, and ensure you reference the correct paper (`/paper/HPT-DTE-CAFP.pdf`).
 
 >  RESEARCH ONLY. NOT FINANCIAL ADVICE. See [Disclaimer](#disclaimer) below.
 > ## Mathematical Details
