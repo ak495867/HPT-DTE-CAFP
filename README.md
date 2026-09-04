@@ -2,6 +2,7 @@
 
 [![Paper](https://img.shields.io/badge/PAPER-HPT--DTE-000000?style=for-the-badge&logo=academia&logoColor=white)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7389258)
 [![SSRN](https://img.shields.io/badge/SSRN-7389258-000000?style=for-the-badge)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7389258)
+[![Medium](https://img.shields.io/badge/Medium-Read_the_Article-black?style=for-the-badge&logo=medium&logoColor=white)](https://medium.com/@akhverm/i-built-a-transformer-that-reads-markets-in-two-domains-at-once-9468996c8d5d)
 [![Release](https://img.shields.io/github/v/release/ak495867/HPT-DTE-CAFP?style=for-the-badge)](https://github.com/ak495867/HPT-DTE-CAFP/releases)
 [![License](https://img.shields.io/github/license/ak495867/HPT-DTE-CAFP?style=for-the-badge)](https://github.com/ak495867/HPT-DTE-CAFP/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/ak495867/HPT-DTE-CAFP?style=for-the-badge)](https://github.com/ak495867/HPT-DTE-CAFP/stargazers)
